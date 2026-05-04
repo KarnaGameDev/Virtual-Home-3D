@@ -1,0 +1,34 @@
+plugins {
+    id "com.android.application"
+    id "org.jetbrains.kotlin.android"
+    id "com.facebook.react"
+}
+
+def jscFlavor = "org.webkit:android-jsc:+"
+
+android {
+    namespace "com.roomscanner"
+    compileSdk 35
+
+    defaultConfig {
+        applicationId "com.roomscanner"
+        minSdk 24
+        targetSdk 35
+        versionCode 1
+        versionName "0.1.0"
+    }
+}
+
+react {
+    autolinkLibrariesWithApp()
+}
+
+dependencies {
+    implementation "com.facebook.react:react-android"
+    implementation "com.google.ar:core:1.54.0"
+    if (hermesEnabled.toBoolean()) {
+        implementation "com.facebook.react:hermes-android"
+    } else {
+        implementation jscFlavor
+    }
+}

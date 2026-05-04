@@ -1,0 +1,3 @@
+<!-- Merge these keys into the app target Info.plist when the iOS project is generated. -->
+<key>NSCameraUsageDescription</key>
+<string>Room Scanner uses the camera to scan your room and create a 3D layout.</string>
