@@ -108,6 +108,26 @@ class RoomScannerModule(
         }
     }
 
+    @ReactMethod
+    fun saveLatestRoom(roomJson: String, promise: Promise) {
+        if (roomJson.isBlank()) {
+            promise.reject("LATEST_ROOM_EMPTY", "Latest room JSON cannot be empty.")
+            return
+        }
+
+        try {
+            JSONObject(roomJson)
+            reactContext
+                .getSharedPreferences(PREFERENCES_NAME, 0)
+                .edit()
+                .putString(LATEST_ROOM_JSON_KEY, roomJson)
+                .apply()
+            promise.resolve(null)
+        } catch (error: Exception) {
+            promise.reject("LATEST_ROOM_SAVE_FAILED", "Latest room could not be saved.", error)
+        }
+    }
+
     private fun jsonObjectToWritableMap(jsonObject: JSONObject): WritableMap {
         val map = Arguments.createMap()
         val keys = jsonObject.keys()
