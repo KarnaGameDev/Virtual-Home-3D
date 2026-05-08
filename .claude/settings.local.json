@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell($path = \"d:\\\\Suman\\\\Codex\\\\Virtual Home\\\\src\\\\screens\\\\RoomPreviewScreen.tsx\"; $lines = Get-Content -LiteralPath $path; $kept = $lines[0..569] + $lines[1761..\\($lines.Count - 1\\)]; Set-Content -LiteralPath $path -Value $kept -Encoding utf8; \"$\\($lines.Count\\) -> $\\($kept.Count\\)\")",
+      "Bash(npx --no-install tsc --noEmit -p \"d:\\\\Suman\\\\Codex\\\\Virtual Home\")",
+      "Bash(npx --no-install tsc --noEmit)",
+      "Bash(echo \"EXIT=$?\")",
+      "Bash(adb devices *)",
+      "Bash(npm run *)"
+    ]
+  }
+}

@@ -1,0 +1,981 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; background: #0b0f12; overflow: hidden; touch-action: none; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    canvas { display: block; width: 100vw; height: 100vh; }
+    #panel {
+      position: fixed; left: 12px; top: 12px; right: 12px;
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      color: #dbe8e3; background: rgba(16, 20, 24, 0.78);
+      border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 8px; padding: 10px 12px;
+      pointer-events: none;
+    }
+    #panel button { pointer-events: auto; appearance: none; border: 0; border-radius: 8px;
+      background: #1f8a70; color: #fff; font: 700 13px system-ui, sans-serif; min-height: 38px; padding: 0 14px; }
+    #title { color: #f8fbfa; font-size: 14px; font-weight: 800; margin-bottom: 3px; }
+    #stats, #hint { color: #b9c7c2; font-size: 12px; line-height: 17px; }
+    #hint {
+      position: fixed; left: 12px; right: 12px; bottom: 12px;
+      background: rgba(16, 20, 24, 0.72);
+      border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 8px; padding: 9px 12px;
+      pointer-events: none;
+    }
+    #loading {
+      position: fixed; inset: 0; background: #0b0f12;
+      display: flex; align-items: center; justify-content: center; flex-direction: column;
+      color: #fff; font-size: 16px; gap: 12px; z-index: 10;
+    }
+    #loading-bar-wrap { width: 200px; height: 4px; background: #333; border-radius: 2px; }
+    #loading-bar { height: 100%; background: #4af; border-radius: 2px; width: 0%; transition: width 0.2s; }
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+  <div id="loading">
+    <span id="loading-text">Preparing scene...</span>
+    <div id="loading-bar-wrap"><div id="loading-bar"></div></div>
+  </div>
+
+  <div id="panel" class="hidden">
+    <div>
+      <div id="title">Room preview</div>
+      <div id="stats"></div>
+    </div>
+    <div><button id="reset" type="button">Reset</button></div>
+  </div>
+  <div id="hint" class="hidden"></div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.162.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.162.0/examples/jsm/"
+    }
+  }
+  </script>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { RGBELoader } from 'three/addons/loaders/RGBELoader.js';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+    /* =========================================================================
+       SECTION 1: Constants & DOM
+       ========================================================================= */
+    const HDR_URL = 'skyboxes/autumn_field_puresky_1k.hdr';
+    const HIGHLIGHT = 0xfca726;
+    const FLOOR_TINT = 0x9a7b52;
+    const FLOOR_TINT_ESTIMATED = 0xa89272;
+    const WALL_TINT = 0xefe9dc;
+    const WALL_TINT_ESTIMATED = 0xc8c5be;
+    const FRAME_COLOR = 0x6d4f30;
+    const DOOR_COLOR = 0x5d3f25;
+    const KNOB_COLOR = 0xc9a04b;
+    const GLASS_TINT = 0xdfeaf2;
+
+    const loadingEl = document.getElementById('loading');
+    const loadingBar = document.getElementById('loading-bar');
+    const loadingTxt = document.getElementById('loading-text');
+    const panel = document.getElementById('panel');
+    const stats = document.getElementById('stats');
+    const hint = document.getElementById('hint');
+    const resetBtn = document.getElementById('reset');
+
+    function setProgress(pct, label) {
+      loadingBar.style.width = Math.min(Math.max(pct, 0), 100) + '%';
+      if (label) loadingTxt.textContent = label;
+    }
+    function clamp(v, mn, mx) { return Math.max(mn, Math.min(mx, v)); }
+
+    /* =========================================================================
+       SECTION 2: Renderer / scene / cameras
+       ========================================================================= */
+    const renderer = new THREE.WebGLRenderer({
+      antialias: true,
+      powerPreference: 'high-performance',
+      alpha: false,
+    });
+    // Cap pixel ratio: Android WebView often reports DPR 2.5–3 which kills perf.
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.05;
+
+    // Heuristic: enable shadows only on capable GPUs.
+    const shadowsEnabled = (() => {
+      const maxTex = renderer.capabilities.maxTextureSize || 0;
+      return maxTex >= 4096;
+    })();
+    renderer.shadowMap.enabled = shadowsEnabled;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+    document.body.appendChild(renderer.domElement);
+    const canvas = renderer.domElement;
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x9bb6cc); // initial soft sky tint until env loads
+
+    const orbitCamera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.05, 200);
+    orbitCamera.position.set(4, 4, 6);
+    const spatialCamera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.05, 200);
+
+    const orbitControls = new OrbitControls(orbitCamera, canvas);
+    orbitControls.enableDamping = true;
+    orbitControls.dampingFactor = 0.08;
+    orbitControls.minDistance = 0.6;
+    orbitControls.maxDistance = 30;
+    orbitControls.maxPolarAngle = Math.PI * 0.495; // never go below floor
+    orbitControls.target.set(0, 1.2, 0);
+
+    /* =========================================================================
+       SECTION 3: Lighting (always-on fallback so the room never looks unlit)
+       ========================================================================= */
+    const ambient = new THREE.AmbientLight(0xffffff, 0.18);
+    scene.add(ambient);
+
+    const hemi = new THREE.HemisphereLight(0xeaf2ff, 0x4a3a2a, 0.55);
+    hemi.position.set(0, 50, 0);
+    scene.add(hemi);
+
+    const keyLight = new THREE.DirectionalLight(0xfff1d6, 2.2);
+    keyLight.position.set(6, 9, 4);
+    keyLight.castShadow = shadowsEnabled;
+    if (shadowsEnabled) {
+      keyLight.shadow.mapSize.set(1024, 1024);
+      keyLight.shadow.bias = -0.0002;
+      keyLight.shadow.normalBias = 0.02;
+      keyLight.shadow.camera.near = 0.5;
+      keyLight.shadow.camera.far = 40;
+      keyLight.shadow.radius = 3;
+    }
+    scene.add(keyLight);
+    scene.add(keyLight.target);
+
+    const fillLight = new THREE.DirectionalLight(0xb9d4ff, 0.35);
+    fillLight.position.set(-5, 5, -3);
+    scene.add(fillLight);
+
+    /* =========================================================================
+       SECTION 4: Environment (instant RoomEnvironment, then HDR upgrade)
+       ========================================================================= */
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    pmrem.compileEquirectangularShader();
+
+    // Step 1: synthetic studio env via RoomEnvironment so PBR is correct from frame 0.
+    const roomEnv = pmrem.fromScene(new RoomEnvironment(renderer), 0.04).texture;
+    scene.environment = roomEnv;
+
+    // Step 2: upgrade to HDR-driven IBL + soft-blurred sky background.
+    setProgress(15, 'Loading sky HDR...');
+    new RGBELoader().load(
+      HDR_URL,
+      (tex) => {
+        const envMap = pmrem.fromEquirectangular(tex).texture;
+        scene.environment = envMap;
+        scene.background = envMap;
+        // Three r152+: blur and dim the photographic detail so it reads as ambient sky.
+        if ('backgroundBlurriness' in scene) scene.backgroundBlurriness = 0.6;
+        if ('backgroundIntensity' in scene) scene.backgroundIntensity = 0.9;
+        tex.dispose();
+        roomEnv.dispose();
+        setProgress(85, 'Building room...');
+        finishStartup();
+      },
+      (xhr) => {
+        if (xhr.total) setProgress(15 + (xhr.loaded / xhr.total) * 60, 'Loading sky HDR...');
+      },
+      (err) => {
+        console.warn('HDR load failed; using RoomEnvironment fallback.', err);
+        // RoomEnvironment is already active — just keep a soft procedural sky behind the room.
+        scene.background = makeProceduralSky();
+        finishStartup();
+      },
+    );
+
+    function makeProceduralSky() {
+      const c = document.createElement('canvas');
+      c.width = 8; c.height = 256;
+      const ctx = c.getContext('2d');
+      const g = ctx.createLinearGradient(0, 0, 0, 256);
+      g.addColorStop(0, '#9ec4e6');
+      g.addColorStop(0.55, '#cfdfeb');
+      g.addColorStop(1, '#e7e1d3');
+      ctx.fillStyle = g; ctx.fillRect(0, 0, 8, 256);
+      const tex = new THREE.CanvasTexture(c);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      return tex;
+    }
+
+    /* =========================================================================
+       SECTION 5: Procedural PBR textures (canvas → THREE.CanvasTexture)
+       Cached so we never regenerate per material.
+       ========================================================================= */
+    const TEX = {};
+
+    function makeOakFloorTextures() {
+      // Albedo: warm oak planks with subtle grain & seams.
+      const W = 1024, H = 1024;
+      const albedo = document.createElement('canvas');
+      albedo.width = W; albedo.height = H;
+      const a = albedo.getContext('2d');
+      a.fillStyle = '#9a7b52'; a.fillRect(0, 0, W, H);
+      const plankH = 128;
+      for (let y = 0; y < H; y += plankH) {
+        // Stagger plank ends per row.
+        const offset = ((y / plankH) % 2) * (W * 0.5);
+        for (let x = -offset; x < W; x += W * 0.5) {
+          // Per-plank base tint variation.
+          const tint = 80 + Math.floor(Math.random() * 50);
+          a.fillStyle = `rgb(${140 + (tint - 100) / 2}, ${100 + (tint - 100) / 3}, ${60 + (tint - 100) / 4})`;
+          a.fillRect(x, y, W * 0.5, plankH);
+          // Grain streaks.
+          for (let i = 0; i < 30; i++) {
+            const gy = y + Math.random() * plankH;
+            a.strokeStyle = `rgba(60, 35, 18, ${0.05 + Math.random() * 0.12})`;
+            a.lineWidth = 1 + Math.random() * 1.5;
+            a.beginPath();
+            a.moveTo(x, gy);
+            a.bezierCurveTo(x + W * 0.15, gy + (Math.random() - 0.5) * 6, x + W * 0.35, gy + (Math.random() - 0.5) * 6, x + W * 0.5, gy);
+            a.stroke();
+          }
+          // Plank seam on right edge.
+          a.fillStyle = 'rgba(20, 12, 6, 0.55)';
+          a.fillRect(x + W * 0.5 - 1, y, 2, plankH);
+        }
+        // Horizontal seam.
+        a.fillStyle = 'rgba(20, 12, 6, 0.55)';
+        a.fillRect(0, y + plankH - 1, W, 2);
+      }
+      // Subtle vignette / dirt overlay.
+      const dirt = a.createRadialGradient(W / 2, H / 2, W * 0.2, W / 2, H / 2, W * 0.7);
+      dirt.addColorStop(0, 'rgba(0,0,0,0)');
+      dirt.addColorStop(1, 'rgba(0,0,0,0.18)');
+      a.fillStyle = dirt; a.fillRect(0, 0, W, H);
+
+      // Roughness: planks slightly variable, seams rougher.
+      const rough = document.createElement('canvas');
+      rough.width = W; rough.height = H;
+      const r = rough.getContext('2d');
+      r.fillStyle = '#a0a0a0'; r.fillRect(0, 0, W, H);
+      for (let y = 0; y < H; y += plankH) {
+        const offset = ((y / plankH) % 2) * (W * 0.5);
+        for (let x = -offset; x < W; x += W * 0.5) {
+          r.fillStyle = `rgb(${150 + Math.floor(Math.random() * 40)},${150 + Math.floor(Math.random() * 40)},${150 + Math.floor(Math.random() * 40)})`;
+          r.fillRect(x, y, W * 0.5, plankH);
+        }
+        r.fillStyle = '#222'; r.fillRect(0, y + plankH - 1, W, 2);
+      }
+
+      // Cheap fake "normal" via blue-up-axis with variation; lifts grain under directional light.
+      const normal = document.createElement('canvas');
+      normal.width = W; normal.height = H;
+      const n = normal.getContext('2d');
+      n.fillStyle = '#8080ff'; n.fillRect(0, 0, W, H);
+      for (let y = 0; y < H; y += plankH) {
+        // Plank groove highlights (bias normal to suggest a bevel).
+        n.fillStyle = '#9090ff';
+        n.fillRect(0, y, W, 2);
+        n.fillStyle = '#7070ff';
+        n.fillRect(0, y + plankH - 2, W, 2);
+        const offset = ((y / plankH) % 2) * (W * 0.5);
+        for (let x = -offset; x < W; x += W * 0.5) {
+          n.fillStyle = '#9090ff'; n.fillRect(x, y, 2, plankH);
+          n.fillStyle = '#7070ff'; n.fillRect(x + W * 0.5 - 2, y, 2, plankH);
+        }
+      }
+
+      const mkTex = (cv, srgb) => {
+        const t = new THREE.CanvasTexture(cv);
+        t.wrapS = t.wrapT = THREE.RepeatWrapping;
+        t.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+        if (srgb) t.colorSpace = THREE.SRGBColorSpace;
+        return t;
+      };
+      return { map: mkTex(albedo, true), roughnessMap: mkTex(rough, false), normalMap: mkTex(normal, false) };
+    }
+
+    function makeDrywallTextures() {
+      const W = 512, H = 512;
+      const albedo = document.createElement('canvas');
+      albedo.width = W; albedo.height = H;
+      const a = albedo.getContext('2d');
+      a.fillStyle = '#efe9dc'; a.fillRect(0, 0, W, H);
+      // Subtle speckle so it isn't a perfectly flat color.
+      for (let i = 0; i < 4000; i++) {
+        const x = Math.random() * W, y = Math.random() * H;
+        a.fillStyle = `rgba(${180 + Math.random() * 50},${170 + Math.random() * 50},${150 + Math.random() * 40},${Math.random() * 0.05})`;
+        a.fillRect(x, y, 1, 1);
+      }
+      const normal = document.createElement('canvas');
+      normal.width = W; normal.height = H;
+      const n = normal.getContext('2d');
+      n.fillStyle = '#8080ff'; n.fillRect(0, 0, W, H);
+      // Tiny noisy bumps.
+      for (let i = 0; i < 1500; i++) {
+        const x = Math.random() * W, y = Math.random() * H;
+        const r = 120 + Math.floor(Math.random() * 40);
+        const g = 120 + Math.floor(Math.random() * 40);
+        n.fillStyle = `rgba(${r},${g},255,0.5)`;
+        n.fillRect(x, y, 2, 2);
+      }
+      const mk = (cv, srgb) => {
+        const t = new THREE.CanvasTexture(cv);
+        t.wrapS = t.wrapT = THREE.RepeatWrapping;
+        if (srgb) t.colorSpace = THREE.SRGBColorSpace;
+        return t;
+      };
+      return { map: mk(albedo, true), normalMap: mk(normal, false) };
+    }
+
+    function makePaneledDoorTexture() {
+      const W = 512, H = 1024;
+      const c = document.createElement('canvas');
+      c.width = W; c.height = H;
+      const x = c.getContext('2d');
+      x.fillStyle = '#5d3f25'; x.fillRect(0, 0, W, H);
+      // Two-panel door look.
+      x.strokeStyle = 'rgba(20,10,4,0.85)'; x.lineWidth = 8;
+      const inset = 60;
+      x.strokeRect(inset, inset, W - inset * 2, H * 0.45 - inset);
+      x.strokeRect(inset, H * 0.5 + inset / 2, W - inset * 2, H * 0.5 - inset * 1.5);
+      // Wood grain.
+      for (let i = 0; i < 60; i++) {
+        x.strokeStyle = `rgba(30,15,5,${0.05 + Math.random() * 0.15})`;
+        x.lineWidth = 1 + Math.random() * 2;
+        x.beginPath();
+        const sy = Math.random() * H;
+        x.moveTo(0, sy);
+        x.bezierCurveTo(W * 0.3, sy + (Math.random() - 0.5) * 12, W * 0.6, sy + (Math.random() - 0.5) * 12, W, sy);
+        x.stroke();
+      }
+      const t = new THREE.CanvasTexture(c);
+      t.colorSpace = THREE.SRGBColorSpace;
+      return t;
+    }
+
+    TEX.floor = makeOakFloorTextures();
+    TEX.wall = makeDrywallTextures();
+    TEX.door = makePaneledDoorTexture();
+
+    /* =========================================================================
+       SECTION 6: Material factory
+       ========================================================================= */
+    function makeFloorMaterial(estimated) {
+      const m = new THREE.MeshStandardMaterial({
+        map: TEX.floor.map,
+        roughnessMap: TEX.floor.roughnessMap,
+        normalMap: TEX.floor.normalMap,
+        normalScale: new THREE.Vector2(0.4, 0.4),
+        roughness: 0.65,
+        metalness: 0.04,
+        color: estimated ? FLOOR_TINT_ESTIMATED : 0xffffff,
+        envMapIntensity: 0.9,
+        transparent: estimated,
+        opacity: estimated ? 0.9 : 1,
+      });
+      return m;
+    }
+    function makeWallMaterial(estimated) {
+      return new THREE.MeshStandardMaterial({
+        map: TEX.wall.map,
+        normalMap: TEX.wall.normalMap,
+        normalScale: new THREE.Vector2(0.25, 0.25),
+        color: estimated ? WALL_TINT_ESTIMATED : WALL_TINT,
+        roughness: 0.92,
+        metalness: 0.0,
+        side: THREE.DoubleSide,
+        envMapIntensity: 0.55,
+        transparent: estimated,
+        opacity: estimated ? 0.82 : 1,
+      });
+    }
+    function makeFrameMaterial(highlighted) {
+      return new THREE.MeshStandardMaterial({
+        color: highlighted ? HIGHLIGHT : FRAME_COLOR,
+        roughness: 0.55,
+        metalness: 0.05,
+        envMapIntensity: 0.9,
+      });
+    }
+    function makeDoorMaterial() {
+      return new THREE.MeshStandardMaterial({
+        map: TEX.door,
+        color: 0xffffff,
+        roughness: 0.5,
+        metalness: 0.04,
+        envMapIntensity: 0.9,
+      });
+    }
+    function makeKnobMaterial() {
+      return new THREE.MeshStandardMaterial({
+        color: KNOB_COLOR,
+        roughness: 0.18,
+        metalness: 0.95,
+        envMapIntensity: 1.4,
+      });
+    }
+    function makeGlassMaterial() {
+      // Real glass via transmission. Cheap on mobile because we keep thickness small
+      // and don't enable refraction iridescence.
+      return new THREE.MeshPhysicalMaterial({
+        color: GLASS_TINT,
+        roughness: 0.05,
+        metalness: 0.0,
+        transmission: 0.92,
+        transparent: true,
+        opacity: 1.0,
+        ior: 1.45,
+        thickness: 0.01,
+        envMapIntensity: 1.4,
+        side: THREE.DoubleSide,
+      });
+    }
+
+    /* =========================================================================
+       SECTION 7: Room state & builder
+       ========================================================================= */
+    let room = null;
+    let mode = 'orbit';
+    let selectedWallId = null;
+    let selectedOpeningId = null;
+    let started = false;
+    let pendingRoom = null;
+    let pendingSelection = null;
+    let pendingCamera = null;
+    let bounds = { centerX: 0, centerZ: 0, width: 4, depth: 5, minX: -2, maxX: 2, minZ: -2.5, maxZ: 2.5 };
+
+    const spatial = {
+      yaw: 0, pitch: 0,
+      position: new THREE.Vector3(0, 1.55, 0),
+      dragging: false, lastX: 0, lastY: 0, pinch: 0,
+    };
+
+    const roomRoot = new THREE.Group();
+    scene.add(roomRoot);
+
+    function disposeRoom() {
+      roomRoot.traverse((node) => {
+        if (node.geometry) node.geometry.dispose();
+        if (node.material) {
+          if (Array.isArray(node.material)) node.material.forEach((m) => m.dispose());
+          else node.material.dispose();
+        }
+      });
+      while (roomRoot.children.length) roomRoot.remove(roomRoot.children[0]);
+    }
+
+    function rebuildRoom() {
+      disposeRoom();
+      if (!room) return;
+      const surfaces = ensureSurfaces(room.surfaces || []);
+      const openings = room.openings || [];
+
+      surfaces.forEach((s) => { if (s.type === 'floor') addFloor(s); });
+      surfaces.forEach((s) => {
+        if (s.type === 'wall') {
+          const wallOpenings = openings.filter((o) => o.parentSurfaceId === s.id);
+          addWall(s, wallOpenings);
+        }
+      });
+      openings.forEach((o) => {
+        const wall = surfaces.find((s) => s.id === o.parentSurfaceId);
+        if (wall) addOpeningParts(o, wall);
+      });
+
+      computeBounds(surfaces);
+      fitShadowCamera();
+      updateStats(surfaces);
+    }
+
+    function ensureSurfaces(input) {
+      const list = input.map((s) => ({
+        ...s,
+        source: s.source || (s.id && String(s.id).indexOf('estimated') === 0 ? 'estimated' : 'detected'),
+      }));
+      if (list.length >= 4) return list;
+      const floor = list.find((s) => s.type === 'floor');
+      const center = floor ? floor.center : { x: 0, y: 0, z: 0 };
+      const w = Math.max((floor && floor.size && floor.size.x) || 4, 3.2);
+      const d = Math.max((floor && floor.size && floor.size.z) || 5, 3.2);
+      const h = 2.8;
+      return list.concat([
+        { id: 'estimated-floor', type: 'floor', source: 'estimated', center: { x: center.x, y: 0, z: center.z }, size: { x: w, y: 0.02, z: d }, rotation: { x: 0, y: 0, z: 0 } },
+        { id: 'estimated-wall-n', type: 'wall', source: 'estimated', center: { x: center.x, y: h / 2, z: center.z - d / 2 }, size: { x: w, y: h, z: 0.04 }, rotation: { x: 0, y: 0, z: 0 } },
+        { id: 'estimated-wall-s', type: 'wall', source: 'estimated', center: { x: center.x, y: h / 2, z: center.z + d / 2 }, size: { x: w, y: h, z: 0.04 }, rotation: { x: 0, y: Math.PI, z: 0 } },
+        { id: 'estimated-wall-w', type: 'wall', source: 'estimated', center: { x: center.x - w / 2, y: h / 2, z: center.z }, size: { x: d, y: h, z: 0.04 }, rotation: { x: 0, y: Math.PI / 2, z: 0 } },
+        { id: 'estimated-wall-e', type: 'wall', source: 'estimated', center: { x: center.x + w / 2, y: h / 2, z: center.z }, size: { x: d, y: h, z: 0.04 }, rotation: { x: 0, y: -Math.PI / 2, z: 0 } },
+      ]);
+    }
+
+    function computeBounds(surfaces) {
+      let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+      surfaces.forEach((s) => {
+        const sx = Math.max((s.size && s.size.x) || 0.04, 0.04);
+        const sz = Math.max((s.size && s.size.z) || 0.04, 0.04);
+        const yaw = (s.rotation && s.rotation.y) || 0;
+        const cx = (s.center && s.center.x) || 0;
+        const cz = (s.center && s.center.z) || 0;
+        const corners = [[-sx / 2, 0, -sz / 2], [sx / 2, 0, -sz / 2], [sx / 2, 0, sz / 2], [-sx / 2, 0, sz / 2]];
+        corners.forEach((c) => {
+          const x = c[0] * Math.cos(yaw) + c[2] * Math.sin(yaw) + cx;
+          const z = -c[0] * Math.sin(yaw) + c[2] * Math.cos(yaw) + cz;
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (z < minZ) minZ = z;
+          if (z > maxZ) maxZ = z;
+        });
+      });
+      if (!isFinite(minX)) { minX = -2; maxX = 2; minZ = -2.5; maxZ = 2.5; }
+      bounds = {
+        minX, maxX, minZ, maxZ,
+        centerX: (minX + maxX) / 2,
+        centerZ: (minZ + maxZ) / 2,
+        width: Math.max(maxX - minX, 1),
+        depth: Math.max(maxZ - minZ, 1),
+      };
+      orbitControls.target.set(bounds.centerX, 1.2, bounds.centerZ);
+      clampSpatialPosition();
+    }
+
+    function fitShadowCamera() {
+      if (!shadowsEnabled) return;
+      const r = Math.max(bounds.width, bounds.depth) * 0.9 + 1.5;
+      const cam = keyLight.shadow.camera;
+      cam.left = -r; cam.right = r; cam.top = r; cam.bottom = -r;
+      cam.updateProjectionMatrix();
+      keyLight.target.position.set(bounds.centerX, 0, bounds.centerZ);
+      keyLight.position.set(bounds.centerX + 6, 9, bounds.centerZ + 4);
+      keyLight.target.updateMatrixWorld();
+    }
+
+    function addFloor(surface) {
+      const w = Math.max(surface.size.x, 0.5);
+      const d = Math.max(surface.size.z, 0.5);
+      const estimated = surface.source === 'estimated';
+      const material = makeFloorMaterial(estimated);
+      // Tile texture roughly 1m per repeat.
+      ['map', 'roughnessMap', 'normalMap'].forEach((k) => {
+        if (material[k]) {
+          const t = material[k].clone();
+          t.wrapS = t.wrapT = THREE.RepeatWrapping;
+          t.repeat.set(w / 1.2, d / 1.2);
+          t.needsUpdate = true;
+          material[k] = t;
+        }
+      });
+      const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, d), material);
+      mesh.rotation.x = -Math.PI / 2;
+      mesh.position.set(surface.center.x, surface.center.y, surface.center.z);
+      mesh.receiveShadow = true;
+      mesh.userData.id = surface.id;
+      mesh.userData.kind = 'floor';
+      roomRoot.add(mesh);
+    }
+
+    function addWall(surface, wallOpenings) {
+      const wallW = Math.max(surface.size.x, 0.05);
+      const wallH = Math.max(surface.size.y, 0.05);
+      const wallD = Math.max(surface.size.z, 0.04);
+
+      const shape = new THREE.Shape();
+      shape.moveTo(-wallW / 2, -wallH / 2);
+      shape.lineTo(wallW / 2, -wallH / 2);
+      shape.lineTo(wallW / 2, wallH / 2);
+      shape.lineTo(-wallW / 2, wallH / 2);
+      shape.lineTo(-wallW / 2, -wallH / 2);
+
+      wallOpenings.forEach((opening) => {
+        const local = worldToWallLocal(surface, opening.center);
+        const ow = Math.max(opening.size.x, 0.04) / 2;
+        const oh = Math.max(opening.size.y, 0.04) / 2;
+        const left = clamp(local.x - ow, -wallW / 2 + 0.02, wallW / 2 - 0.02);
+        const right = clamp(local.x + ow, -wallW / 2 + 0.02, wallW / 2 - 0.02);
+        const bot = clamp(local.y - oh, -wallH / 2 + 0.02, wallH / 2 - 0.02);
+        const top = clamp(local.y + oh, -wallH / 2 + 0.02, wallH / 2 - 0.02);
+        if (right - left < 0.05 || top - bot < 0.05) return;
+        const hole = new THREE.Path();
+        hole.moveTo(left, bot);
+        hole.lineTo(right, bot);
+        hole.lineTo(right, top);
+        hole.lineTo(left, top);
+        hole.lineTo(left, bot);
+        shape.holes.push(hole);
+      });
+
+      const geometry = new THREE.ExtrudeGeometry(shape, { depth: wallD, bevelEnabled: false, curveSegments: 1, steps: 1 });
+      geometry.translate(0, 0, -wallD / 2);
+      // Approximate UVs based on wall size so drywall texture tiles consistently.
+      geometry.computeVertexNormals();
+
+      const estimated = surface.source === 'estimated';
+      const selected = surface.id === selectedWallId;
+      const material = makeWallMaterial(estimated);
+      ['map', 'normalMap'].forEach((k) => {
+        if (material[k]) {
+          const t = material[k].clone();
+          t.wrapS = t.wrapT = THREE.RepeatWrapping;
+          t.repeat.set(wallW / 2, wallH / 2);
+          t.needsUpdate = true;
+          material[k] = t;
+        }
+      });
+
+      const mesh = new THREE.Mesh(geometry, material);
+      mesh.position.set(surface.center.x, surface.center.y, surface.center.z);
+      mesh.rotation.y = (surface.rotation && surface.rotation.y) || 0;
+      mesh.castShadow = shadowsEnabled;
+      mesh.receiveShadow = true;
+      mesh.userData.id = surface.id;
+      mesh.userData.kind = 'wall';
+      roomRoot.add(mesh);
+
+      if (selected) {
+        const edges = new THREE.EdgesGeometry(geometry);
+        const lineMat = new THREE.LineBasicMaterial({ color: HIGHLIGHT, transparent: true, opacity: 0.95 });
+        const line = new THREE.LineSegments(edges, lineMat);
+        line.position.copy(mesh.position);
+        line.rotation.copy(mesh.rotation);
+        line.renderOrder = 2;
+        roomRoot.add(line);
+      }
+    }
+
+    function addOpeningParts(opening, wall) {
+      const yaw = (wall.rotation && wall.rotation.y) || 0;
+      const local = worldToWallLocal(wall, opening.center);
+      const cx = wall.center.x + local.x * Math.cos(yaw);
+      const cy = opening.center.y || wall.center.y;
+      const cz = wall.center.z - local.x * Math.sin(yaw);
+
+      const group = new THREE.Group();
+      group.position.set(cx, cy, cz);
+      group.rotation.y = yaw;
+      group.userData.openingId = opening.id;
+
+      const w = Math.max(opening.size.x, 0.1);
+      const h = Math.max(opening.size.y, 0.1);
+      const selected = opening.id === selectedOpeningId;
+      const frameThick = 0.045;
+      const frameDepth = Math.max((wall.size && wall.size.z) || 0.04, 0.04) + 0.04;
+
+      const frameMat = makeFrameMaterial(selected);
+
+      const top = new THREE.Mesh(new THREE.BoxGeometry(w + frameThick * 2, frameThick, frameDepth), frameMat);
+      top.position.set(0, h / 2 + frameThick / 2, 0);
+      top.castShadow = shadowsEnabled;
+      group.add(top);
+      const bottom = new THREE.Mesh(new THREE.BoxGeometry(w + frameThick * 2, frameThick, frameDepth), frameMat);
+      bottom.position.set(0, -h / 2 - frameThick / 2, 0);
+      bottom.castShadow = shadowsEnabled;
+      group.add(bottom);
+      const left = new THREE.Mesh(new THREE.BoxGeometry(frameThick, h + frameThick * 2, frameDepth), frameMat);
+      left.position.set(-w / 2 - frameThick / 2, 0, 0);
+      left.castShadow = shadowsEnabled;
+      group.add(left);
+      const right = new THREE.Mesh(new THREE.BoxGeometry(frameThick, h + frameThick * 2, frameDepth), frameMat);
+      right.position.set(w / 2 + frameThick / 2, 0, 0);
+      right.castShadow = shadowsEnabled;
+      group.add(right);
+
+      if (opening.type === 'door') {
+        const door = new THREE.Mesh(new THREE.BoxGeometry(w * 0.97, h * 0.985, 0.045), makeDoorMaterial());
+        door.castShadow = shadowsEnabled;
+        door.receiveShadow = true;
+        group.add(door);
+        const knob = new THREE.Mesh(new THREE.SphereGeometry(0.028, 16, 12), makeKnobMaterial());
+        knob.position.set(w / 2 - 0.1, -0.05, 0.028);
+        group.add(knob);
+      } else if (opening.type === 'window') {
+        const glass = new THREE.Mesh(new THREE.BoxGeometry(w * 0.97, h * 0.97, 0.012), makeGlassMaterial());
+        group.add(glass);
+        const mullion = new THREE.Mesh(new THREE.BoxGeometry(0.025, h * 0.97, 0.03), frameMat);
+        group.add(mullion);
+      } else {
+        const bar = new THREE.Mesh(new THREE.BoxGeometry(w * 0.97, 0.025, 0.03), frameMat);
+        group.add(bar);
+      }
+
+      roomRoot.add(group);
+    }
+
+    function worldToWallLocal(wall, point) {
+      const yaw = (wall.rotation && wall.rotation.y) || 0;
+      const c = Math.cos(yaw);
+      const s = Math.sin(yaw);
+      const dx = (point.x || 0) - (wall.center.x || 0);
+      const dz = (point.z || 0) - (wall.center.z || 0);
+      return { x: dx * c - dz * s, y: (point.y || 0) - (wall.center.y || 0) };
+    }
+
+    function updateStats(surfaces) {
+      if (!stats || !room) return;
+      const detected = surfaces.filter((s) => s.source !== 'estimated').length;
+      const estimated = surfaces.length - detected;
+      stats.textContent = (room.quality || 'estimated') + ' quality - ' + detected + ' detected, ' + estimated + ' estimated - ' + (room.wallConfidence || 0) + '% confidence';
+    }
+    function updateHint() {
+      if (!hint) return;
+      hint.textContent = mode === 'spatial'
+        ? 'Drag to look around - pinch or wheel to move forward / back.'
+        : 'Drag to orbit - pinch to zoom.';
+    }
+
+    /* =========================================================================
+       SECTION 8: Spatial first-person controls (unchanged behaviour)
+       ========================================================================= */
+    canvas.addEventListener('pointerdown', (e) => {
+      if (mode !== 'spatial') return;
+      spatial.dragging = true;
+      spatial.lastX = e.clientX;
+      spatial.lastY = e.clientY;
+      try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
+    });
+    canvas.addEventListener('pointermove', (e) => {
+      if (mode !== 'spatial' || !spatial.dragging) return;
+      spatial.yaw += (e.clientX - spatial.lastX) * 0.01;
+      spatial.pitch = clamp(spatial.pitch - (e.clientY - spatial.lastY) * 0.006, -0.9, 0.9);
+      spatial.lastX = e.clientX;
+      spatial.lastY = e.clientY;
+    });
+    canvas.addEventListener('pointerup', (e) => {
+      spatial.dragging = false;
+      try { canvas.releasePointerCapture(e.pointerId); } catch (_) {}
+    });
+    canvas.addEventListener('wheel', (e) => {
+      if (mode !== 'spatial') return;
+      moveSpatial(e.deltaY > 0 ? -0.22 : 0.22);
+    }, { passive: true });
+    canvas.addEventListener('touchmove', (e) => {
+      if (mode !== 'spatial' || e.touches.length !== 2) return;
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      const d = Math.hypot(dx, dy);
+      if (spatial.pinch > 0) moveSpatial((d - spatial.pinch) * 0.006);
+      spatial.pinch = d;
+    }, { passive: true });
+    canvas.addEventListener('touchend', () => { spatial.pinch = 0; });
+
+    function moveSpatial(amount) {
+      spatial.position.x += Math.sin(spatial.yaw) * amount;
+      spatial.position.z += -Math.cos(spatial.yaw) * amount;
+      clampSpatialPosition();
+    }
+    function clampSpatialPosition() {
+      const m = 0.18;
+      spatial.position.x = clamp(spatial.position.x, bounds.minX + m, bounds.maxX - m);
+      spatial.position.z = clamp(spatial.position.z, bounds.minZ + m, bounds.maxZ - m);
+      spatial.position.y = 1.55;
+    }
+
+    /* =========================================================================
+       SECTION 9: Render loop
+       ========================================================================= */
+    let activeCamera = orbitCamera;
+    let lastNotified = 0;
+    function render() {
+      if (mode === 'orbit') {
+        orbitControls.update();
+        activeCamera = orbitCamera;
+      } else {
+        const dir = new THREE.Vector3(
+          Math.sin(spatial.yaw) * Math.cos(spatial.pitch),
+          Math.sin(spatial.pitch),
+          -Math.cos(spatial.yaw) * Math.cos(spatial.pitch),
+        );
+        spatialCamera.position.copy(spatial.position);
+        spatialCamera.lookAt(
+          spatial.position.x + dir.x,
+          spatial.position.y + dir.y,
+          spatial.position.z + dir.z,
+        );
+        activeCamera = spatialCamera;
+      }
+      renderer.render(scene, activeCamera);
+      maybeNotifyCamera();
+    }
+    function loop() {
+      requestAnimationFrame(loop);
+      render();
+    }
+    loop();
+
+    function resize() {
+      const w = window.innerWidth;
+      const h = window.innerHeight;
+      renderer.setSize(w, h);
+      orbitCamera.aspect = w / h;
+      orbitCamera.updateProjectionMatrix();
+      spatialCamera.aspect = w / h;
+      spatialCamera.updateProjectionMatrix();
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    if (resetBtn) resetBtn.addEventListener('click', () => resetView());
+
+    /* =========================================================================
+       SECTION 10: Startup + RN bridge (PUBLIC API — keep stable)
+       ========================================================================= */
+    function finishStartup() {
+      if (started) return;
+      started = true;
+      if (pendingRoom) { room = pendingRoom; pendingRoom = null; }
+      rebuildRoom();
+      if (pendingSelection) { applyPreviewSelectionInternal(pendingSelection); pendingSelection = null; }
+      if (pendingCamera) { restoreCameraInternal(pendingCamera); pendingCamera = null; }
+      setProgress(100, 'Done');
+      setTimeout(() => loadingEl.classList.add('hidden'), 250);
+      notifyReady();
+    }
+
+    function maybeNotifyCamera() {
+      if (!window.ReactNativeWebView || !window.ReactNativeWebView.postMessage) return;
+      const now = performance.now();
+      if (now - lastNotified < 200) return;
+      lastNotified = now;
+      window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'camera', camera: collectCameraState() }));
+    }
+    function collectCameraState() {
+      const offset = new THREE.Vector3().subVectors(orbitCamera.position, orbitControls.target);
+      const distance = offset.length();
+      const yaw = Math.atan2(offset.x, offset.z);
+      const pitch = -Math.asin(offset.y / Math.max(distance, 0.001));
+      return {
+        mode, yaw, pitch, distance,
+        spatialYaw: spatial.yaw,
+        spatialPitch: spatial.pitch,
+        spatialPosition: [spatial.position.x, spatial.position.y, spatial.position.z],
+      };
+    }
+    function resetView() {
+      if (mode === 'orbit') {
+        const dist = Math.max(bounds.width, bounds.depth, 5) * 1.4;
+        orbitControls.target.set(bounds.centerX, 1.2, bounds.centerZ);
+        orbitCamera.position.set(
+          bounds.centerX + Math.sin(-0.68) * dist,
+          dist * 0.55 + 1.3,
+          bounds.centerZ + Math.cos(-0.68) * dist,
+        );
+        orbitControls.update();
+      } else {
+        spatial.yaw = 0;
+        spatial.pitch = 0;
+        spatial.position.set(bounds.centerX, 1.55, bounds.centerZ);
+      }
+    }
+    function notifyReady() {
+      if (!window.ReactNativeWebView || !window.ReactNativeWebView.postMessage) return;
+      window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'ready' }));
+    }
+    function applyPreviewSelectionInternal(selection) {
+      selectedWallId = (selection && selection.selectedWallId) || null;
+      selectedOpeningId = (selection && selection.selectedOpeningId) || null;
+      rebuildRoom();
+      if (selection && selection.focusOpening && mode === 'spatial') focusSelectedOpening();
+    }
+    function restoreCameraInternal(camera) {
+      if (!camera) return;
+      if (typeof camera.spatialYaw === 'number') spatial.yaw = camera.spatialYaw;
+      if (typeof camera.spatialPitch === 'number') spatial.pitch = camera.spatialPitch;
+      if (Array.isArray(camera.spatialPosition) && camera.spatialPosition.length === 3) {
+        spatial.position.set(camera.spatialPosition[0], camera.spatialPosition[1], camera.spatialPosition[2]);
+        clampSpatialPosition();
+      }
+      if (typeof camera.yaw === 'number' && typeof camera.pitch === 'number' && typeof camera.distance === 'number') {
+        const yaw = camera.yaw, pitch = camera.pitch, dist = Math.max(camera.distance, 0.5);
+        orbitCamera.position.set(
+          orbitControls.target.x + Math.sin(yaw) * Math.cos(pitch) * dist,
+          orbitControls.target.y - Math.sin(pitch) * dist,
+          orbitControls.target.z + Math.cos(yaw) * Math.cos(pitch) * dist,
+        );
+        orbitControls.update();
+      }
+    }
+    function focusSelectedOpening() {
+      if (!selectedOpeningId || !room) return;
+      const opening = (room.openings || []).find((o) => o.id === selectedOpeningId);
+      if (!opening) return;
+      const wall = (room.surfaces || []).find((s) => s.id === opening.parentSurfaceId);
+      if (!wall) return;
+      const yaw = (wall.rotation && wall.rotation.y) || 0;
+      const inX = Math.sin(yaw);
+      const inZ = Math.cos(yaw);
+      spatial.position.set((opening.center.x || 0) + inX * 1.4, 1.55, (opening.center.z || 0) + inZ * 1.4);
+      clampSpatialPosition();
+      const dx = (opening.center.x || 0) - spatial.position.x;
+      const dy = (opening.center.y || 1.2) - spatial.position.y;
+      const dz = (opening.center.z || 0) - spatial.position.z;
+      spatial.yaw = Math.atan2(dx, -dz);
+      spatial.pitch = clamp(Math.atan2(dy, Math.hypot(dx, dz)), -0.42, 0.42);
+    }
+
+    window.applyPreviewRoom = function (next) {
+      const payload = typeof next === 'string' ? JSON.parse(next) : next;
+      if (!payload) return;
+      if (!started) { pendingRoom = payload; return; }
+      room = payload;
+      rebuildRoom();
+      resetView();
+    };
+    window.applyPreviewSelection = function (selection) {
+      const payload = typeof selection === 'string' ? JSON.parse(selection) : selection;
+      if (!started) { pendingSelection = payload; return; }
+      applyPreviewSelectionInternal(payload);
+    };
+    window.setPreviewMode = function (nextMode) {
+      mode = nextMode === 'spatial' ? 'spatial' : 'orbit';
+      orbitControls.enabled = mode === 'orbit';
+      updateHint();
+    };
+    window.setPanelVisible = function (visible) {
+      if (panel) panel.classList.toggle('hidden', !visible);
+      if (hint) hint.classList.toggle('hidden', !visible);
+    };
+    window.setSkyboxExposure = function (value) {
+      const v = parseFloat(value);
+      if (isFinite(v)) renderer.toneMappingExposure = v;
+    };
+    window.resetView = resetView;
+    window.focusOpening = function (openingId) {
+      selectedOpeningId = openingId || null;
+      focusSelectedOpening();
+    };
+    window.restoreCamera = function (camera) {
+      const payload = typeof camera === 'string' ? JSON.parse(camera) : camera;
+      if (!started) { pendingCamera = payload; return; }
+      restoreCameraInternal(payload);
+    };
+    window.updateRoom = window.applyPreviewRoom;
+
+    async function loadLatestRoomJson() {
+      try {
+        const response = await fetch('latest_room.json', { cache: 'no-store' });
+        if (!response.ok) return;
+        const text = await response.text();
+        window.applyPreviewRoom(JSON.parse(text.replace(/^\uFEFF/, '')));
+      } catch (_) {
+        // Missing fallback room JSON should not affect React Native-driven preview.
+      }
+    }
+
+    const hash = (location.hash || '').toLowerCase();
+    if (hash.indexOf('mode=spatial') >= 0) {
+      mode = 'spatial';
+      orbitControls.enabled = false;
+    }
+    const panelHidden = hash.indexOf('panel=hide') >= 0;
+    panel.classList.toggle('hidden', panelHidden);
+    hint.classList.toggle('hidden', panelHidden);
+    updateHint();
+    setTimeout(() => {
+      if (!room) loadLatestRoomJson();
+    }, 500);
+  </script>
+</body>
+</html>

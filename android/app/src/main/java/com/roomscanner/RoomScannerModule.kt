@@ -2,9 +2,12 @@ package com.roomscanner
 
 import android.app.Activity
 import android.content.Intent
-import com.facebook.react.bridge.Promise
+import android.view.View
+import android.view.ViewGroup
+import android.webkit.WebView
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.BaseActivityEventListener
+import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
@@ -18,6 +21,7 @@ class RoomScannerModule(
     private val reactContext: ReactApplicationContext,
 ) : ReactContextBaseJavaModule(reactContext) {
     private var scanPromise: Promise? = null
+    private val assetServer = AssetServer(reactContext, port = ASSET_SERVER_PORT)
 
     private val activityEventListener: BaseActivityEventListener =
         object : BaseActivityEventListener() {
@@ -60,6 +64,11 @@ class RoomScannerModule(
 
     init {
         reactContext.addActivityEventListener(activityEventListener)
+        try {
+            assetServer.start()
+        } catch (_: Exception) {
+            // A previous module/activity instance may already be serving the preview assets.
+        }
     }
 
     override fun getName(): String = "RoomScannerModule"
@@ -128,6 +137,48 @@ class RoomScannerModule(
         }
     }
 
+    @ReactMethod
+    fun setSkyboxExposure(exposure: Float, promise: Promise) {
+        val activity = currentActivity
+        if (activity == null) {
+            promise.reject("NO_ACTIVITY", "No activity is available.")
+            return
+        }
+
+        activity.runOnUiThread {
+            val webView = findWebView(activity.window.decorView)
+            if (webView == null) {
+                promise.reject("NO_WEBVIEW", "WebView not found.")
+                return@runOnUiThread
+            }
+
+            webView.evaluateJavascript("setSkyboxExposure($exposure)", null)
+            promise.resolve(true)
+        }
+    }
+
+    override fun onCatalystInstanceDestroy() {
+        assetServer.stop()
+        super.onCatalystInstanceDestroy()
+    }
+
+    private fun findWebView(view: View): WebView? {
+        if (view is WebView) {
+            return view
+        }
+
+        if (view is ViewGroup) {
+            for (index in 0 until view.childCount) {
+                val found = findWebView(view.getChildAt(index))
+                if (found != null) {
+                    return found
+                }
+            }
+        }
+
+        return null
+    }
+
     private fun jsonObjectToWritableMap(jsonObject: JSONObject): WritableMap {
         val map = Arguments.createMap()
         val keys = jsonObject.keys()
@@ -171,6 +222,7 @@ class RoomScannerModule(
     }
 
     companion object {
+        private const val ASSET_SERVER_PORT = 8085
         private const val ROOM_SCAN_REQUEST_CODE = 4301
         private const val PREFERENCES_NAME = "room_scanner"
         private const val LATEST_ROOM_JSON_KEY = "latest_room_json"

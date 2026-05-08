@@ -17,6 +17,28 @@ android {
         versionCode 1
         versionName "0.1.0"
     }
+
+    signingConfigs {
+        debug {
+            storeFile file("${System.properties['user.home']}/.android/debug.keystore")
+            storePassword "android"
+            keyAlias "androiddebugkey"
+            keyPassword "android"
+        }
+    }
+
+    buildTypes {
+        debug {
+            signingConfig signingConfigs.debug
+        }
+        release {
+            // Sideload-friendly release: signed with the debug keystore so the APK
+            // can be installed on any device without provisioning a real keystore.
+            signingConfig signingConfigs.debug
+            minifyEnabled false
+            shrinkResources false
+        }
+    }
 }
 
 react {
@@ -26,6 +48,7 @@ react {
 dependencies {
     implementation "com.facebook.react:react-android"
     implementation "com.google.ar:core:1.54.0"
+    implementation "org.nanohttpd:nanohttpd:2.3.1"
     if (hermesEnabled.toBoolean()) {
         implementation "com.facebook.react:hermes-android"
     } else {
