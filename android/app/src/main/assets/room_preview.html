@@ -954,44 +954,16 @@
     };
     window.updateRoom = window.applyPreviewRoom;
 
-    let dataSource = 'pending';
-
     async function loadLatestRoomJson() {
       try {
         const response = await fetch('latest_room.json', { cache: 'no-store' });
-        if (!response.ok) { dataSource = 'fetch:' + response.status; updateDebug(); return; }
+        if (!response.ok) return;
         const text = await response.text();
         const parsed = JSON.parse(text.replace(/^\uFEFF/, ''));
-        dataSource = 'fetch';
-        updateDebug();
         window.applyPreviewRoom(parsed);
-      } catch (e) {
-        dataSource = 'fetch:err';
-        updateDebug();
+      } catch (_) {
+        // React Native injection is the primary path; fetch is only a fallback.
       }
-    }
-
-    function applyDefaultRoom() {
-      dataSource = 'default';
-      updateDebug();
-      window.applyPreviewRoom({ surfaces: [], openings: [], quality: 'estimated', wallConfidence: 0 });
-    }
-
-    // Mark the source if RN injection wins the race.
-    const origApply = window.applyPreviewRoom;
-    window.applyPreviewRoom = function (next) {
-      if (dataSource === 'pending') { dataSource = 'rn'; updateDebug(); }
-      return origApply(next);
-    };
-    window.updateRoom = window.applyPreviewRoom;
-
-    // Tiny debug HUD: append #debug to the URL to surface the data source on screen.
-    let debugEl = null;
-    function updateDebug() {
-      if (!debugEl) return;
-      const sCount = room && room.surfaces ? room.surfaces.length : 0;
-      const oCount = room && room.openings ? room.openings.length : 0;
-      debugEl.textContent = 'src=' + dataSource + ' surfaces=' + sCount + ' openings=' + oCount;
     }
 
     const hash = (location.hash || '').toLowerCase();
@@ -1002,28 +974,9 @@
     const panelHidden = hash.indexOf('panel=hide') >= 0;
     panel.classList.toggle('hidden', panelHidden);
     hint.classList.toggle('hidden', panelHidden);
-    // Always-on debug HUD while we're triaging — IMPOSSIBLE TO MISS.
-    debugEl = document.createElement('div');
-    debugEl.style.cssText = 'position:fixed;top:60px;left:8px;right:8px;padding:10px 12px;background:#ffcc00;color:#000;font:700 14px monospace;border-radius:6px;z-index:9999;pointer-events:none;white-space:pre-wrap;border:2px solid #000;';
-    debugEl.textContent = 'HUD alive · src=pending';
-    document.body.appendChild(debugEl);
-
-    window.addEventListener('error', (e) => {
-      if (!debugEl) return;
-      debugEl.style.background = 'rgba(140,30,30,0.9)';
-      debugEl.textContent = 'ERR: ' + (e.message || 'unknown') + '\nat ' + (e.filename || '?') + ':' + (e.lineno || '?');
-    });
-    window.addEventListener('unhandledrejection', (e) => {
-      if (!debugEl) return;
-      debugEl.style.background = 'rgba(140,30,30,0.9)';
-      debugEl.textContent = 'PROMISE ERR: ' + (e && e.reason && e.reason.message ? e.reason.message : String(e.reason));
-    });
     updateHint();
 
-    // Path B: try fetch fallback at 500ms if RN didn't inject.
     setTimeout(() => { if (!room) loadLatestRoomJson(); }, 500);
-    // Hard fallback: if neither RN nor fetch produced a room within 1.5s, render a placeholder.
-    setTimeout(() => { if (!room) applyDefaultRoom(); }, 1500);
   </script>
 </body>
 </html>

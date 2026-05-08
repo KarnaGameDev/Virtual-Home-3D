@@ -10,14 +10,13 @@ class AssetServer(
 ) : NanoHTTPD(port) {
 
     override fun serve(session: IHTTPSession): Response {
-        // Strip leading slash → asset path
         val path = session.uri.trimStart('/')
 
         return try {
             if (path == "latest_room.json") {
                 val roomJson = context
-                    .getSharedPreferences("room_scanner", 0)
-                    .getString("latest_room_json", null)
+                    .getSharedPreferences(PREFERENCES_NAME, 0)
+                    .getString(LATEST_ROOM_JSON_KEY, null)
 
                 return newFixedLengthResponse(
                     if (roomJson.isNullOrBlank()) Response.Status.NOT_FOUND else Response.Status.OK,
@@ -34,12 +33,13 @@ class AssetServer(
                 path.endsWith(".hdr") -> "application/octet-stream"
                 path.endsWith(".glb") -> "model/gltf-binary"
                 path.endsWith(".gltf") -> "model/gltf+json"
-                path.endsWith(".js")  -> "application/javascript"
-                path.endsWith(".html")-> "text/html"
+                path.endsWith(".js") -> "application/javascript"
+                path.endsWith(".html") -> "text/html"
                 path.endsWith(".png") -> "image/png"
                 path.endsWith(".jpg") -> "image/jpeg"
                 else -> "application/octet-stream"
             }
+
             newChunkedResponse(Response.Status.OK, mime, stream).apply {
                 addHeader("Access-Control-Allow-Origin", "*")
                 if (path.endsWith(".html")) {
@@ -50,8 +50,15 @@ class AssetServer(
             }
         } catch (e: IOException) {
             newFixedLengthResponse(
-                Response.Status.NOT_FOUND, "text/plain", "Not found: $path"
+                Response.Status.NOT_FOUND,
+                "text/plain",
+                "Not found: $path"
             )
         }
+    }
+
+    companion object {
+        private const val PREFERENCES_NAME = "room_scanner"
+        private const val LATEST_ROOM_JSON_KEY = "latest_room_json"
     }
 }

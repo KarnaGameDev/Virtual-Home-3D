@@ -1,4 +1,4 @@
-﻿import React, {useEffect, useMemo, useRef, useState} from 'react';
+﻿import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {
   SafeAreaView,
   ScrollView,
@@ -53,8 +53,8 @@ export function RoomPreviewScreen({room, onBack}: RoomPreviewScreenProps) {
   const previewUrl = useMemo(
     () =>
       spatialScene
-        ? `${PREVIEW_BASE_URL}#mode=spatial&panel=hide&debug`
-        : `${PREVIEW_BASE_URL}#debug`,
+        ? `${PREVIEW_BASE_URL}#mode=spatial&panel=hide`
+        : PREVIEW_BASE_URL,
     [spatialScene],
   );
   const detectedCount =
@@ -64,7 +64,7 @@ export function RoomPreviewScreen({room, onBack}: RoomPreviewScreenProps) {
     editableRoom.estimatedSurfaceCount ??
     editableRoom.surfaces.filter(surface => surface.source === 'estimated').length;
 
-  function pushPreviewSelection() {
+  const pushPreviewSelection = useCallback(() => {
     const payload = escapeForInject(
       JSON.stringify({
         selectedWallId:
@@ -77,31 +77,33 @@ export function RoomPreviewScreen({room, onBack}: RoomPreviewScreenProps) {
     previewRef.current?.injectJavaScript(
       `window.applyPreviewSelection && window.applyPreviewSelection(JSON.parse('${payload}')); true;`,
     );
-  }
+  }, [editingOpenings, selectedOpeningId, selectedWall?.id, spatialScene]);
 
-  function pushPreviewRoom() {
+  const pushPreviewRoom = useCallback(() => {
     const payload = escapeForInject(JSON.stringify(editableRoom));
     previewRef.current?.injectJavaScript(
       `window.applyPreviewRoom && window.applyPreviewRoom(JSON.parse('${payload}')); true;`,
     );
-  }
+  }, [editableRoom]);
 
-  function pushPreviewCamera() {
+  const pushPreviewCamera = useCallback(() => {
     const camera = cameraStateRef.current;
-    if (!camera) return;
+    if (!camera) {
+      return;
+    }
     const payload = escapeForInject(JSON.stringify(camera));
     previewRef.current?.injectJavaScript(
       `window.restoreCamera && window.restoreCamera(JSON.parse('${payload}')); true;`,
     );
-  }
+  }, []);
 
   useEffect(() => {
     pushPreviewSelection();
-  }, [editingOpenings, selectedOpeningId, selectedWall?.id, spatialScene]);
+  }, [pushPreviewSelection]);
 
   useEffect(() => {
     pushPreviewRoom();
-  }, [editableRoom]);
+  }, [pushPreviewRoom]);
 
   function handlePreviewMessage(event: {nativeEvent: {data: string}}) {
     try {
