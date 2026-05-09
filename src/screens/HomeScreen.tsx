@@ -1,7 +1,9 @@
 import React, {useEffect, useState} from 'react';
 import {
   ActivityIndicator,
+  Alert,
   SafeAreaView,
+  ScrollView,
   StatusBar,
   StyleSheet,
   Text,
@@ -9,7 +11,8 @@ import {
   View,
 } from 'react-native';
 import {
-  getLatestRoom,
+  deleteSavedRoom,
+  getSavedRooms,
   isRoomScanningSupported,
   scanRoom,
 } from '../native/RoomScannerModule';
@@ -23,7 +26,7 @@ type ScanState = 'checking' | 'ready' | 'unsupported' | 'scanning' | 'error';
 
 export function HomeScreen({onPreviewRoom}: HomeScreenProps) {
   const [scanState, setScanState] = useState<ScanState>('checking');
-  const [room, setRoom] = useState<RoomModel | null>(null);
+  const [rooms, setRooms] = useState<RoomModel[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -41,10 +44,10 @@ export function HomeScreen({onPreviewRoom}: HomeScreenProps) {
         }
       });
 
-    getLatestRoom()
-      .then(latestRoom => {
-        if (mounted && latestRoom) {
-          setRoom(latestRoom);
+    getSavedRooms()
+      .then(savedRooms => {
+        if (mounted) {
+          setRooms(savedRooms);
         }
       })
       .catch(() => {
@@ -62,11 +65,49 @@ export function HomeScreen({onPreviewRoom}: HomeScreenProps) {
 
     try {
       const nextRoom = await scanRoom();
-      setRoom(nextRoom);
+      setRooms(currentRooms => upsertRoom(currentRooms, nextRoom));
       setScanState('ready');
     } catch (scanError) {
       setError(scanError instanceof Error ? scanError.message : 'Scan failed');
       setScanState('error');
+    }
+  }
+
+  function confirmDeleteRoom(room: RoomModel) {
+    Alert.alert(
+      'Delete layout?',
+      `Delete ${room.name}? This cannot be undone.`,
+      [
+        {text: 'Cancel', style: 'cancel'},
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => {
+            handleDeleteRoom(room).catch(() => undefined);
+          },
+        },
+      ],
+    );
+  }
+
+  async function handleDeleteRoom(room: RoomModel) {
+    if (!room.id) {
+      setError('This layout cannot be deleted because it has no saved id.');
+      return;
+    }
+
+    setError(null);
+    try {
+      await deleteSavedRoom(room.id);
+      setRooms(currentRooms =>
+        currentRooms.filter(savedRoom => savedRoom.id !== room.id),
+      );
+    } catch (deleteError) {
+      setError(
+        deleteError instanceof Error
+          ? deleteError.message
+          : 'Layout could not be deleted',
+      );
     }
   }
 
@@ -75,69 +116,84 @@ export function HomeScreen({onPreviewRoom}: HomeScreenProps) {
   return (
     <SafeAreaView style={styles.screen}>
       <StatusBar barStyle="light-content" />
-      <View style={styles.header}>
-        <Text style={styles.title}>Room Scanner</Text>
-        <Text style={styles.subtitle}>
-          Scan a real room, create a clean 3D layout, then place reusable props.
-        </Text>
-      </View>
+      <ScrollView contentContainerStyle={styles.content}>
+        <View style={styles.header}>
+          <Text style={styles.title}>Room Scanner</Text>
+          <Text style={styles.subtitle}>
+            Scan a real room, create a clean 3D layout, then place reusable props.
+          </Text>
+        </View>
 
-      <View style={styles.panel}>
-        <Text style={styles.panelTitle}>Scanner</Text>
-        <Text style={styles.panelText}>{statusText(scanState)}</Text>
+        <View style={styles.panel}>
+          <Text style={styles.panelTitle}>Scanner</Text>
+          <Text style={styles.panelText}>{statusText(scanState)}</Text>
 
-        {scanState === 'checking' || scanState === 'scanning' ? (
-          <ActivityIndicator color="#1f8a70" />
-        ) : null}
+          {scanState === 'checking' || scanState === 'scanning' ? (
+            <ActivityIndicator color="#1f8a70" />
+          ) : null}
 
-        {error ? <Text style={styles.error}>{error}</Text> : null}
+          {error ? <Text style={styles.error}>{error}</Text> : null}
 
-        <TouchableOpacity
-          activeOpacity={0.8}
-          disabled={!canScan}
-          onPress={handleScan}
-          style={[styles.button, !canScan && styles.buttonDisabled]}>
-          <Text style={styles.buttonText}>Start Room Scan</Text>
-        </TouchableOpacity>
-      </View>
+          <TouchableOpacity
+            activeOpacity={0.8}
+            disabled={!canScan}
+            onPress={handleScan}
+            style={[styles.button, !canScan && styles.buttonDisabled]}>
+            <Text style={styles.buttonText}>Start Room Scan</Text>
+          </TouchableOpacity>
+        </View>
 
-      <View style={styles.panel}>
-        <Text style={styles.panelTitle}>Latest Room</Text>
-        {room ? (
-          <>
-            <Text style={styles.roomName}>{room.name}</Text>
+        <View style={styles.panel}>
+          <Text style={styles.panelTitle}>Saved Layouts</Text>
+          {rooms.length ? (
+            rooms.map(savedRoom => (
+              <View key={savedRoom.id} style={styles.layoutItem}>
+                <View style={styles.layoutText}>
+                  <Text style={styles.layoutName}>{savedRoom.name}</Text>
+                  <Text style={styles.panelText}>
+                    {formatRoomDate(savedRoom.createdAt)}
+                  </Text>
+                </View>
+                <View style={styles.layoutActions}>
+                  <TouchableOpacity
+                    activeOpacity={0.8}
+                    onPress={() => onPreviewRoom(savedRoom)}
+                    style={styles.viewButton}>
+                    <Text style={styles.secondaryButtonText}>View</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    activeOpacity={0.8}
+                    onPress={() => confirmDeleteRoom(savedRoom)}
+                    style={styles.deleteButton}>
+                    <Text style={styles.deleteButtonText}>Delete</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ))
+          ) : (
             <Text style={styles.panelText}>
-              {room.surfaces.length} surfaces, {room.openings.length} openings
+              No saved layouts yet. Start a room scan to create one.
             </Text>
-            <Text style={styles.panelText}>
-              Quality: {room.quality ?? 'unknown'} - Detected:{' '}
-              {room.detectedSurfaceCount ?? room.surfaces.length} - Estimated:{' '}
-              {room.estimatedSurfaceCount ?? 0}
-            </Text>
-            <Text style={styles.panelText}>
-              Wall confidence: {room.wallConfidence ?? 0}% - Depth frames:{' '}
-              {room.depthFrameCount ?? 0}
-            </Text>
-            <Text style={styles.panelText}>
-              Raw depth confidence: {room.rawDepthConfidence ?? 0}%
-            </Text>
-            <Text style={styles.panelText}>
-              Depth points: {room.depthPointCount ?? 0}
-            </Text>
-            <Text style={styles.panelText}>Scanner: {room.scanner}</Text>
-            <TouchableOpacity
-              activeOpacity={0.8}
-              onPress={() => onPreviewRoom(room)}
-              style={styles.secondaryButton}>
-              <Text style={styles.secondaryButtonText}>Open 3D Preview</Text>
-            </TouchableOpacity>
-          </>
-        ) : (
-          <Text style={styles.panelText}>No room has been scanned yet.</Text>
-        )}
-      </View>
+          )}
+        </View>
+      </ScrollView>
     </SafeAreaView>
   );
+}
+
+function upsertRoom(rooms: RoomModel[], nextRoom: RoomModel) {
+  return [nextRoom]
+    .concat(rooms.filter(room => room.id !== nextRoom.id))
+    .slice(0, 12);
+}
+
+function formatRoomDate(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return 'Unknown date';
+  }
+
+  return date.toLocaleString();
 }
 
 function statusText(scanState: ScanState) {
@@ -159,6 +215,8 @@ const styles = StyleSheet.create({
   screen: {
     flex: 1,
     backgroundColor: '#101418',
+  },
+  content: {
     padding: 20,
     gap: 16,
   },
@@ -193,11 +251,6 @@ const styles = StyleSheet.create({
     fontSize: 15,
     lineHeight: 22,
   },
-  roomName: {
-    color: '#ffffff',
-    fontSize: 20,
-    fontWeight: '700',
-  },
   error: {
     color: '#ffb4ab',
     fontSize: 14,
@@ -219,7 +272,7 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
   },
-  secondaryButton: {
+  viewButton: {
     alignItems: 'center',
     backgroundColor: '#263630',
     borderRadius: 8,
@@ -231,6 +284,42 @@ const styles = StyleSheet.create({
   },
   secondaryButtonText: {
     color: '#dff7ee',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  layoutItem: {
+    alignItems: 'center',
+    borderColor: '#33443f',
+    borderRadius: 8,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 12,
+    justifyContent: 'space-between',
+    padding: 12,
+  },
+  layoutText: {
+    flex: 1,
+    gap: 4,
+  },
+  layoutName: {
+    color: '#ffffff',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  layoutActions: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  deleteButton: {
+    alignItems: 'center',
+    backgroundColor: '#8f3d35',
+    borderRadius: 8,
+    justifyContent: 'center',
+    minHeight: 46,
+    paddingHorizontal: 14,
+  },
+  deleteButtonText: {
+    color: '#fff4f2',
     fontSize: 15,
     fontWeight: '700',
   },

@@ -5,7 +5,9 @@ type NativeRoomScannerModule = {
   isSupported(): Promise<boolean>;
   scanRoom(): Promise<RoomModel>;
   getLatestRoom(): Promise<RoomModel | null>;
+  getSavedRooms?(): Promise<RoomModel[]>;
   saveLatestRoom(roomJson: string): Promise<void>;
+  deleteSavedRoom?(roomId: string): Promise<void>;
 };
 
 const moduleName = 'RoomScannerModule';
@@ -39,10 +41,27 @@ export async function getLatestRoom(): Promise<RoomModel | null> {
   return nativeModule.getLatestRoom();
 }
 
+export async function getSavedRooms(): Promise<RoomModel[]> {
+  if (nativeModule?.getSavedRooms) {
+    return nativeModule.getSavedRooms();
+  }
+
+  const latestRoom = await getLatestRoom();
+  return latestRoom ? [latestRoom] : [];
+}
+
 export async function saveLatestRoom(room: RoomModel): Promise<void> {
   if (!nativeModule?.saveLatestRoom) {
     return;
   }
 
   await nativeModule.saveLatestRoom(JSON.stringify(room));
+}
+
+export async function deleteSavedRoom(roomId: string): Promise<void> {
+  if (!nativeModule?.deleteSavedRoom) {
+    return;
+  }
+
+  await nativeModule.deleteSavedRoom(roomId);
 }

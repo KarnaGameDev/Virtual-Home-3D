@@ -50,11 +50,7 @@ class RoomScannerModule(
                 }
 
                 try {
-                    reactContext
-                        .getSharedPreferences(PREFERENCES_NAME, 0)
-                        .edit()
-                        .putString(LATEST_ROOM_JSON_KEY, roomJson)
-                        .apply()
+                    saveRoomJson(roomJson)
                     promise.resolve(jsonObjectToWritableMap(JSONObject(roomJson)))
                 } catch (error: Exception) {
                     promise.reject("SCAN_PARSE_FAILED", "Room scan result could not be parsed.", error)
@@ -118,6 +114,31 @@ class RoomScannerModule(
     }
 
     @ReactMethod
+    fun getSavedRooms(promise: Promise) {
+        val preferences = reactContext.getSharedPreferences(PREFERENCES_NAME, 0)
+        val roomsJson = preferences.getString(ROOM_HISTORY_JSON_KEY, null)
+
+        try {
+            val rooms = JSONArray()
+            if (!roomsJson.isNullOrBlank()) {
+                val savedRooms = JSONArray(roomsJson)
+                for (index in 0 until savedRooms.length()) {
+                    rooms.put(savedRooms.getJSONObject(index))
+                }
+            } else {
+                val latestRoomJson = preferences.getString(LATEST_ROOM_JSON_KEY, null)
+                if (!latestRoomJson.isNullOrBlank()) {
+                    rooms.put(JSONObject(latestRoomJson))
+                }
+            }
+
+            promise.resolve(jsonArrayToWritableArray(rooms))
+        } catch (error: Exception) {
+            promise.reject("ROOM_HISTORY_PARSE_FAILED", "Saved rooms could not be parsed.", error)
+        }
+    }
+
+    @ReactMethod
     fun saveLatestRoom(roomJson: String, promise: Promise) {
         if (roomJson.isBlank()) {
             promise.reject("LATEST_ROOM_EMPTY", "Latest room JSON cannot be empty.")
@@ -125,15 +146,25 @@ class RoomScannerModule(
         }
 
         try {
-            JSONObject(roomJson)
-            reactContext
-                .getSharedPreferences(PREFERENCES_NAME, 0)
-                .edit()
-                .putString(LATEST_ROOM_JSON_KEY, roomJson)
-                .apply()
+            saveRoomJson(roomJson)
             promise.resolve(null)
         } catch (error: Exception) {
             promise.reject("LATEST_ROOM_SAVE_FAILED", "Latest room could not be saved.", error)
+        }
+    }
+
+    @ReactMethod
+    fun deleteSavedRoom(roomId: String, promise: Promise) {
+        if (roomId.isBlank()) {
+            promise.reject("ROOM_DELETE_EMPTY_ID", "Room id cannot be empty.")
+            return
+        }
+
+        try {
+            deleteRoomById(roomId)
+            promise.resolve(null)
+        } catch (error: Exception) {
+            promise.reject("ROOM_DELETE_FAILED", "Saved room could not be deleted.", error)
         }
     }
 
@@ -221,10 +252,75 @@ class RoomScannerModule(
         return array
     }
 
+    private fun saveRoomJson(roomJson: String) {
+        val nextRoom = JSONObject(roomJson)
+        val nextRoomId = nextRoom.optString("id")
+        val preferences = reactContext.getSharedPreferences(PREFERENCES_NAME, 0)
+        val savedRoomsJson = preferences.getString(ROOM_HISTORY_JSON_KEY, null)
+        val savedRooms = if (savedRoomsJson.isNullOrBlank()) {
+            val latestRoomJson = preferences.getString(LATEST_ROOM_JSON_KEY, null)
+            if (latestRoomJson.isNullOrBlank()) JSONArray() else JSONArray().put(JSONObject(latestRoomJson))
+        } else {
+            JSONArray(savedRoomsJson)
+        }
+        val nextRooms = JSONArray()
+
+        nextRooms.put(nextRoom)
+        for (index in 0 until savedRooms.length()) {
+            val savedRoom = savedRooms.getJSONObject(index)
+            if (nextRooms.length() >= MAX_SAVED_ROOMS) {
+                break
+            }
+            if (nextRoomId.isNotBlank() && savedRoom.optString("id") == nextRoomId) {
+                continue
+            }
+            nextRooms.put(savedRoom)
+        }
+
+        preferences
+            .edit()
+            .putString(LATEST_ROOM_JSON_KEY, roomJson)
+            .putString(ROOM_HISTORY_JSON_KEY, nextRooms.toString())
+            .apply()
+    }
+
+    private fun deleteRoomById(roomId: String) {
+        val preferences = reactContext.getSharedPreferences(PREFERENCES_NAME, 0)
+        val savedRoomsJson = preferences.getString(ROOM_HISTORY_JSON_KEY, null)
+        val savedRooms = if (savedRoomsJson.isNullOrBlank()) {
+            val latestRoomJson = preferences.getString(LATEST_ROOM_JSON_KEY, null)
+            if (latestRoomJson.isNullOrBlank()) JSONArray() else JSONArray().put(JSONObject(latestRoomJson))
+        } else {
+            JSONArray(savedRoomsJson)
+        }
+        val nextRooms = JSONArray()
+
+        for (index in 0 until savedRooms.length()) {
+            val savedRoom = savedRooms.getJSONObject(index)
+            if (savedRoom.optString("id") != roomId) {
+                nextRooms.put(savedRoom)
+            }
+        }
+
+        val editor = preferences.edit()
+        if (nextRooms.length() == 0) {
+            editor
+                .remove(LATEST_ROOM_JSON_KEY)
+                .remove(ROOM_HISTORY_JSON_KEY)
+        } else {
+            editor
+                .putString(LATEST_ROOM_JSON_KEY, nextRooms.getJSONObject(0).toString())
+                .putString(ROOM_HISTORY_JSON_KEY, nextRooms.toString())
+        }
+        editor.apply()
+    }
+
     companion object {
         private const val ASSET_SERVER_PORT = 8085
         private const val ROOM_SCAN_REQUEST_CODE = 4301
         private const val PREFERENCES_NAME = "room_scanner"
         private const val LATEST_ROOM_JSON_KEY = "latest_room_json"
+        private const val ROOM_HISTORY_JSON_KEY = "room_history_json"
+        private const val MAX_SAVED_ROOMS = 12
     }
 }

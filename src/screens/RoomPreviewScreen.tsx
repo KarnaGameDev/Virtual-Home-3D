@@ -57,12 +57,6 @@ export function RoomPreviewScreen({room, onBack}: RoomPreviewScreenProps) {
         : PREVIEW_BASE_URL,
     [spatialScene],
   );
-  const detectedCount =
-    editableRoom.detectedSurfaceCount ??
-    editableRoom.surfaces.filter(surface => surface.source !== 'estimated').length;
-  const estimatedCount =
-    editableRoom.estimatedSurfaceCount ??
-    editableRoom.surfaces.filter(surface => surface.source === 'estimated').length;
 
   const pushPreviewSelection = useCallback(() => {
     const payload = escapeForInject(
@@ -474,10 +468,6 @@ export function RoomPreviewScreen({room, onBack}: RoomPreviewScreenProps) {
         </TouchableOpacity>
         <View style={styles.toolbarText}>
           <Text style={styles.title}>{editableRoom.name}</Text>
-          <Text style={styles.subtitle}>
-            {editableRoom.quality ?? 'estimated'} quality - {detectedCount} detected,{' '}
-            {estimatedCount} estimated - {editableRoom.wallConfidence ?? 0}% confidence
-          </Text>
         </View>
         <TouchableOpacity
           activeOpacity={0.8}
@@ -706,11 +696,6 @@ const styles = StyleSheet.create({
     color: '#f8fbfa',
     fontSize: 17,
     fontWeight: '700',
-  },
-  subtitle: {
-    color: '#b9c7c2',
-    fontSize: 13,
-    marginTop: 2,
   },
   webView: {
     flex: 1,
